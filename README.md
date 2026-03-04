@@ -59,15 +59,13 @@ Use an MCP entry like:
   "mcpServers": {
     "x402-stellar": {
       "command": "npm",
-      "args": ["--silent", "--prefix", "/absolute/path/to/x402-mcp-stellar", "run", "dev"],
-      "env": {
-        "STELLAR_SECRET_KEY": "S...",
-        "STELLAR_NETWORK": "stellar:testnet"
-      }
+      "args": ["--silent", "--prefix", "/absolute/path/to/x402-mcp-stellar", "run", "dev"]
     }
   }
 }
 ```
+
+This server loads `.env` from the project directory (`/absolute/path/to/x402-mcp-stellar/.env`), so keep wallet secrets there instead of in MCP JSON config.
 
 ## Claude Usage
 

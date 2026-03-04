@@ -1,4 +1,6 @@
 import { config as loadEnv } from "dotenv";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
@@ -10,7 +12,10 @@ import { createEd25519Signer } from "./stellar/signer.js";
 
 type StellarNetwork = typeof STELLAR_TESTNET_CAIP2 | typeof STELLAR_PUBNET_CAIP2;
 
-loadEnv();
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDir = dirname(currentFilePath);
+const projectEnvPath = resolve(currentDir, "..", ".env");
+loadEnv({ path: projectEnvPath });
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name]?.trim();
