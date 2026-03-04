@@ -52,7 +52,20 @@ The MCP server runs over stdio for Claude/Codex integrations.
 
 ## Add To Claude Desktop / Codex
 
-Use an MCP entry like:
+Use an MCP entry like (don't forget to change the path/):
+
+### Codex
+
+```bash
+codex mcp add x402-stellar -- npm --silent --prefix /absolute/path/to/x402-mcp-stellar run dev
+```
+
+### Claude Code
+```bash
+claude mcp add x402-stellar -- npm --silent --prefix /absolute/path/to/x402-mcp-stellar run dev
+```
+
+### Claude Desktop
 
 ```json
 {
