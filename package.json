@@ -1,0 +1,28 @@
+{
+  "name": "x402-mcp-stellar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP server that pays x402 Stellar USDC-protected resources.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "start": "node --enable-source-maps --loader tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@stellar/stellar-sdk": "^14.6.1",
+    "@x402/core": "^2.5.0",
+    "@x402/fetch": "^2.5.0",
+    "dotenv": "^16.5.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,219 @@
+import { config as loadEnv } from "dotenv";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
+import { z } from "zod";
+
+import { STELLAR_PUBNET_CAIP2, STELLAR_TESTNET_CAIP2 } from "./stellar/constants.js";
+import { ExactStellarScheme } from "./stellar/exact/client/scheme.js";
+import { createEd25519Signer } from "./stellar/signer.js";
+
+type StellarNetwork = typeof STELLAR_TESTNET_CAIP2 | typeof STELLAR_PUBNET_CAIP2;
+
+loadEnv();
+
+function getRequiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+function getStellarNetwork(): StellarNetwork {
+  const network = (process.env.STELLAR_NETWORK ?? STELLAR_TESTNET_CAIP2).trim();
+  if (network === STELLAR_TESTNET_CAIP2 || network === STELLAR_PUBNET_CAIP2) {
+    return network;
+  }
+  throw new Error(
+    `Unsupported STELLAR_NETWORK: ${network}. Use ${STELLAR_TESTNET_CAIP2} or ${STELLAR_PUBNET_CAIP2}.`,
+  );
+}
+
+function tryParseBody(rawBody: string, contentType: string | null): unknown {
+  if (!rawBody) return "";
+
+  const looksLikeJson = contentType?.toLowerCase().includes("application/json") ?? false;
+  if (!looksLikeJson) {
+    return rawBody;
+  }
+
+  try {
+    return JSON.parse(rawBody) as unknown;
+  } catch {
+    return rawBody;
+  }
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+async function main(): Promise<void> {
+  const network = getStellarNetwork();
+  const secretKey = getRequiredEnv("STELLAR_SECRET_KEY");
+  const rpcUrl = process.env.STELLAR_RPC_URL?.trim() || undefined;
+
+  if (network === STELLAR_PUBNET_CAIP2 && !rpcUrl) {
+    throw new Error(
+      "STELLAR_RPC_URL is required when STELLAR_NETWORK=stellar:pubnet. Testnet works without it.",
+    );
+  }
+
+  const resourceServerUrl = trimTrailingSlash(process.env.RESOURCE_SERVER_URL?.trim() || "http://localhost:3000");
+  const defaultPath = process.env.ENDPOINT_PATH?.trim() || "/my-service";
+
+  const signer = createEd25519Signer(secretKey, network);
+  const paymentClient = new x402Client().register(
+    "stellar:*",
+    new ExactStellarScheme(signer, rpcUrl ? { url: rpcUrl } : undefined),
+  );
+
+  const httpClient = new x402HTTPClient(paymentClient);
+  const fetchWithPayment = wrapFetchWithPayment(fetch, httpClient);
+
+  const server = new McpServer({
+    name: process.env.MCP_SERVER_NAME || "x402-stellar-resource-client",
+    version: process.env.MCP_SERVER_VERSION || "1.0.0",
+  });
+
+  server.tool("x402_wallet_info", "Show Stellar wallet and MCP client configuration", {}, async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            network,
+            address: signer.address,
+            rpcUrl: rpcUrl ?? (network === STELLAR_TESTNET_CAIP2 ? "https://soroban-testnet.stellar.org" : null),
+            resourceServerUrl,
+            defaultPath,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  }));
+
+  server.tool(
+    "fetch_paid_resource",
+    "Fetch a protected x402 resource and automatically pay with Stellar USDC when required",
+    {
+      path: z
+        .string()
+        .default(defaultPath)
+        .describe("Endpoint path, for example /my-service"),
+      method: z.enum(["GET", "POST"]).default("GET").describe("HTTP method"),
+      body: z.string().optional().describe("Optional raw body for POST requests"),
+      headers: z
+        .record(z.string())
+        .optional()
+        .describe("Optional additional HTTP headers"),
+    },
+    async ({ path, method, body, headers }) => {
+      const targetUrl = new URL(path || defaultPath, `${resourceServerUrl}/`).toString();
+
+      const requestHeaders = new Headers(headers ?? {});
+      const requestInit: RequestInit = {
+        method,
+        headers: requestHeaders,
+      };
+
+      if (body && method === "POST") {
+        requestInit.body = body;
+        if (!requestHeaders.has("content-type")) {
+          requestHeaders.set("content-type", "application/json");
+        }
+      }
+
+      const response = await fetchWithPayment(targetUrl, requestInit);
+      const rawBody = await response.text();
+      const parsedBody = tryParseBody(rawBody, response.headers.get("content-type"));
+
+      let paymentReceipt: unknown = null;
+      try {
+        paymentReceipt = httpClient.getPaymentSettleResponse(headerName =>
+          response.headers.get(headerName),
+        );
+      } catch {
+        paymentReceipt = null;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                url: targetUrl,
+                method,
+                status: response.status,
+                ok: response.ok,
+                paymentMade: paymentReceipt !== null,
+                paymentReceipt,
+                response: parsedBody,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "get_my_service",
+    "Fetch the configured default protected endpoint (ENDPOINT_PATH)",
+    {},
+    async () => {
+      const result = await fetchWithPayment(new URL(defaultPath, `${resourceServerUrl}/`).toString(), {
+        method: "GET",
+      });
+
+      const rawBody = await result.text();
+      const parsedBody = tryParseBody(rawBody, result.headers.get("content-type"));
+
+      let paymentReceipt: unknown = null;
+      try {
+        paymentReceipt = httpClient.getPaymentSettleResponse(headerName => result.headers.get(headerName));
+      } catch {
+        paymentReceipt = null;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                url: new URL(defaultPath, `${resourceServerUrl}/`).toString(),
+                status: result.status,
+                ok: result.ok,
+                paymentMade: paymentReceipt !== null,
+                paymentReceipt,
+                response: parsedBody,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+
+  console.error("x402 Stellar MCP server running over stdio");
+  console.error(`wallet: ${signer.address}`);
+  console.error(`network: ${network}`);
+  console.error(`default resource: ${resourceServerUrl}${defaultPath}`);
+}
+
+main().catch(error => {
+  console.error("Fatal error starting MCP server:", error);
+  process.exit(1);
+});
