@@ -2,24 +2,17 @@
 
 Local MCP server (stdio) that can call x402-protected HTTP resources and automatically pay in Stellar USDC.
 
-This server is designed for your current setup:
-
-- protected resource: `http://localhost:3000/my-service`
-- facilitator: `http://localhost:4022`
-- paying wallet: local Stellar secret key (`STELLAR_SECRET_KEY`)
-
 ## Features
 
 - Stellar-only payment flow (`stellar:testnet` or `stellar:pubnet`)
 - Default testnet configuration
 - Mainnet-ready via env switch
-- MCP tools for wallet info and protected resource fetching
+- No resource whitelist: URL is provided at tool call time
 
 ## Tools Exposed
 
 - `x402_wallet_info`: shows active wallet address/network/config
-- `get_my_service`: calls configured `ENDPOINT_PATH` on `RESOURCE_SERVER_URL`
-- `fetch_paid_resource`: generic paid fetch tool (`path`, `method`, optional body/headers)
+- `fetch_paid_resource`: generic paid fetch (`url`, `method`, optional body/headers)
 
 ## Prerequisites
 
@@ -40,8 +33,6 @@ Update `.env` with your wallet key:
 ```dotenv
 STELLAR_SECRET_KEY=S...
 STELLAR_NETWORK=stellar:testnet
-RESOURCE_SERVER_URL=http://localhost:3000
-ENDPOINT_PATH=/my-service
 ```
 
 For mainnet later:
@@ -68,17 +59,23 @@ Use an MCP entry like:
   "mcpServers": {
     "x402-stellar": {
       "command": "npm",
-      "args": ["--prefix", "/absolute/path/to/x402-mcp-stellar", "run", "dev"],
+      "args": ["--silent", "--prefix", "/absolute/path/to/x402-mcp-stellar", "run", "dev"],
       "env": {
         "STELLAR_SECRET_KEY": "S...",
-        "STELLAR_NETWORK": "stellar:testnet",
-        "RESOURCE_SERVER_URL": "http://localhost:3000",
-        "ENDPOINT_PATH": "/my-service"
+        "STELLAR_NETWORK": "stellar:testnet"
       }
     }
   }
 }
 ```
+
+## Claude Usage
+
+After loading the MCP server, you can ask:
+
+`Can you fetch the resource at http://localhost:3000/my-service, use the x402-stellar MCP server to pay for it, and print the response?`
+
+The tool call will pass that full URL at runtime; no URL allowlist or hardcoded endpoint is required in this MCP server.
 
 ## Notes
 

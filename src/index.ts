@@ -45,10 +45,6 @@ function tryParseBody(rawBody: string, contentType: string | null): unknown {
   }
 }
 
-function trimTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value.slice(0, -1) : value;
-}
-
 async function main(): Promise<void> {
   const network = getStellarNetwork();
   const secretKey = getRequiredEnv("STELLAR_SECRET_KEY");
@@ -59,9 +55,6 @@ async function main(): Promise<void> {
       "STELLAR_RPC_URL is required when STELLAR_NETWORK=stellar:pubnet. Testnet works without it.",
     );
   }
-
-  const resourceServerUrl = trimTrailingSlash(process.env.RESOURCE_SERVER_URL?.trim() || "http://localhost:3000");
-  const defaultPath = process.env.ENDPOINT_PATH?.trim() || "/my-service";
 
   const signer = createEd25519Signer(secretKey, network);
   const paymentClient = new x402Client().register(
@@ -86,8 +79,6 @@ async function main(): Promise<void> {
             network,
             address: signer.address,
             rpcUrl: rpcUrl ?? (network === STELLAR_TESTNET_CAIP2 ? "https://soroban-testnet.stellar.org" : null),
-            resourceServerUrl,
-            defaultPath,
           },
           null,
           2,
@@ -98,12 +89,12 @@ async function main(): Promise<void> {
 
   server.tool(
     "fetch_paid_resource",
-    "Fetch a protected x402 resource and automatically pay with Stellar USDC when required",
+    "Fetch any x402-protected URL and automatically pay with Stellar USDC when required",
     {
-      path: z
+      url: z
         .string()
-        .default(defaultPath)
-        .describe("Endpoint path, for example /my-service"),
+        .url()
+        .describe("Full URL to fetch, for example http://localhost:3000/my-service"),
       method: z.enum(["GET", "POST"]).default("GET").describe("HTTP method"),
       body: z.string().optional().describe("Optional raw body for POST requests"),
       headers: z
@@ -111,9 +102,7 @@ async function main(): Promise<void> {
         .optional()
         .describe("Optional additional HTTP headers"),
     },
-    async ({ path, method, body, headers }) => {
-      const targetUrl = new URL(path || defaultPath, `${resourceServerUrl}/`).toString();
-
+    async ({ url, method, body, headers }) => {
       const requestHeaders = new Headers(headers ?? {});
       const requestInit: RequestInit = {
         method,
@@ -127,7 +116,7 @@ async function main(): Promise<void> {
         }
       }
 
-      const response = await fetchWithPayment(targetUrl, requestInit);
+      const response = await fetchWithPayment(url, requestInit);
       const rawBody = await response.text();
       const parsedBody = tryParseBody(rawBody, response.headers.get("content-type"));
 
@@ -146,51 +135,10 @@ async function main(): Promise<void> {
             type: "text",
             text: JSON.stringify(
               {
-                url: targetUrl,
+                url,
                 method,
                 status: response.status,
                 ok: response.ok,
-                paymentMade: paymentReceipt !== null,
-                paymentReceipt,
-                response: parsedBody,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
-  );
-
-  server.tool(
-    "get_my_service",
-    "Fetch the configured default protected endpoint (ENDPOINT_PATH)",
-    {},
-    async () => {
-      const result = await fetchWithPayment(new URL(defaultPath, `${resourceServerUrl}/`).toString(), {
-        method: "GET",
-      });
-
-      const rawBody = await result.text();
-      const parsedBody = tryParseBody(rawBody, result.headers.get("content-type"));
-
-      let paymentReceipt: unknown = null;
-      try {
-        paymentReceipt = httpClient.getPaymentSettleResponse(headerName => result.headers.get(headerName));
-      } catch {
-        paymentReceipt = null;
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                url: new URL(defaultPath, `${resourceServerUrl}/`).toString(),
-                status: result.status,
-                ok: result.ok,
                 paymentMade: paymentReceipt !== null,
                 paymentReceipt,
                 response: parsedBody,
@@ -210,7 +158,6 @@ async function main(): Promise<void> {
   console.error("x402 Stellar MCP server running over stdio");
   console.error(`wallet: ${signer.address}`);
   console.error(`network: ${network}`);
-  console.error(`default resource: ${resourceServerUrl}${defaultPath}`);
 }
 
 main().catch(error => {
