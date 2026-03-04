@@ -65,7 +65,7 @@ codex mcp add x402-stellar -- npm --silent --prefix /absolute/path/to/x402-mcp-s
 claude mcp add x402-stellar -- npm --silent --prefix /absolute/path/to/x402-mcp-stellar run dev
 ```
 
-### Claude Desktop
+### Claude Desktop (untested)
 
 ```json
 {
