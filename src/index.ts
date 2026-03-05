@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const fetchWithPayment = wrapFetchWithPayment(fetch, httpClient);
 
   const server = new McpServer({
-    name: process.env.MCP_SERVER_NAME || "x402-stellar-resource-client",
+    name: process.env.MCP_SERVER_NAME || "x402-mcp-stellar",
     version: process.env.MCP_SERVER_VERSION || "1.0.0",
   });
 

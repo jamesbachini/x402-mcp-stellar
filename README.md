@@ -78,7 +78,7 @@ claude mcp add x402-stellar -- npm --silent --prefix /absolute/path/to/x402-mcp-
 }
 ```
 
-This server loads `.env` from the project directory (`/absolute/path/to/x402-mcp-stellar/.env`), so keep wallet secrets there instead of in MCP JSON config.
+This server loads `.env` from the project directory (`/absolute/path/to/x402-mcp-stellar/.env`).
 
 ## Claude Usage
 
@@ -93,3 +93,8 @@ The tool call will pass that full URL at runtime; no URL allowlist or hardcoded 
 - `@x402/stellar` is not currently published on npm, so this repo vendors the Stellar mechanism under `src/stellar`.
 - Default testnet Soroban RPC is used automatically.
 - Mainnet requires `STELLAR_RPC_URL`.
+
+## License
+
+MIT
+
