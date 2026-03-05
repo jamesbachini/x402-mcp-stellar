@@ -30,6 +30,10 @@ npm install
 cp .env.example .env
 ```
 
+### Testnet 
+For testnet you'll need to run a facilitator locally on port 4022. I'd recommend using the one included in the coinbase x402 repo:
+https://github.com/coinbase/x402/tree/main/examples/typescript/facilitator/advanced
+
 Update `.env` with your wallet key:
 
 ```dotenv
@@ -37,11 +41,14 @@ STELLAR_SECRET_KEY=S...
 STELLAR_NETWORK=stellar:testnet
 ```
 
-For mainnet later:
+### Pubnet
+
+For mainnet you'll just need an OpenZeppelin API Key for the relayer. You can get one here (Thank you for making this easy):
+https://channels.openzeppelin.com/gen
 
 ```dotenv
 STELLAR_NETWORK=stellar:pubnet
-STELLAR_RPC_URL=https://<your-soroban-mainnet-rpc>
+STELLAR_RPC_URL=https://rpc.lightsail.network/
 X402_FACILITATOR_URL=https://channels.openzeppelin.com/x402
 X402_FACILITATOR_API_KEY=<your-openzeppelin-api-key>
 ```
@@ -57,7 +64,7 @@ npm run dev
 
 The MCP server runs over stdio for Claude/Codex integrations.
 
-## Add To Claude Desktop / Codex
+## Add To Claude / Codex
 
 Use an MCP entry like (don't forget to change the path/):
 
