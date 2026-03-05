@@ -7,11 +7,13 @@ Local MCP server (stdio) that can call x402-protected HTTP resources and automat
 - Stellar-only payment flow (`stellar:testnet` or `stellar:pubnet`)
 - Default testnet configuration
 - Mainnet-ready via env switch
+- Optional OpenZeppelin facilitator auth via env
 - No resource whitelist: URL is provided at tool call time
 
 ## Tools Exposed
 
 - `x402_wallet_info`: shows active wallet address/network/config
+- `x402_facilitator_supported`: checks configured facilitator `/supported` endpoint
 - `fetch_paid_resource`: generic paid fetch (`url`, `method`, optional body/headers)
 
 ## Prerequisites
@@ -40,7 +42,12 @@ For mainnet later:
 ```dotenv
 STELLAR_NETWORK=stellar:pubnet
 STELLAR_RPC_URL=https://<your-soroban-mainnet-rpc>
+X402_FACILITATOR_URL=https://channels.openzeppelin.com/x402
+X402_FACILITATOR_API_KEY=<your-openzeppelin-api-key>
 ```
+
+`X402_FACILITATOR_API_KEY` is optional in general, but required for OpenZeppelin channels.
+When set, `fetch_paid_resource` auto-adds `Authorization: Bearer <key>` for requests under `X402_FACILITATOR_URL` (unless you provide `Authorization` explicitly).
 
 ## Run
 

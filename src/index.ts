@@ -11,6 +11,10 @@ import { ExactStellarScheme } from "./stellar/exact/client/scheme.js";
 import { createEd25519Signer } from "./stellar/signer.js";
 
 type StellarNetwork = typeof STELLAR_TESTNET_CAIP2 | typeof STELLAR_PUBNET_CAIP2;
+type FacilitatorConfig = {
+  url?: string;
+  apiKey?: string;
+};
 
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDir = dirname(currentFilePath);
@@ -23,6 +27,11 @@ function getRequiredEnv(name: string): string {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+function getOptionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
 }
 
 function getStellarNetwork(): StellarNetwork {
@@ -50,10 +59,69 @@ function tryParseBody(rawBody: string, contentType: string | null): unknown {
   }
 }
 
+function normalizeBaseUrl(rawUrl: string): string {
+  const parsedUrl = new URL(rawUrl);
+  return parsedUrl.toString().replace(/\/+$/, "");
+}
+
+function getFacilitatorConfig(): FacilitatorConfig {
+  const rawUrl = getOptionalEnv("X402_FACILITATOR_URL");
+  const url = rawUrl ? normalizeBaseUrl(rawUrl) : undefined;
+  const apiKey = getOptionalEnv("X402_FACILITATOR_API_KEY");
+  return { url, apiKey };
+}
+
+function isFacilitatorRequest(requestUrl: string, facilitatorBaseUrl: string): boolean {
+  try {
+    const request = new URL(requestUrl);
+    const facilitator = new URL(facilitatorBaseUrl);
+    if (request.origin !== facilitator.origin) return false;
+
+    const requestPath = request.pathname.replace(/\/+$/, "");
+    const facilitatorPath = facilitator.pathname.replace(/\/+$/, "");
+    if (!facilitatorPath) return true;
+
+    return requestPath === facilitatorPath || requestPath.startsWith(`${facilitatorPath}/`);
+  } catch {
+    return false;
+  }
+}
+
+function withBearerToken(apiKey: string): string {
+  return `Bearer ${apiKey}`;
+}
+
+async function fetchFacilitatorSupported(config: FacilitatorConfig): Promise<{
+  supportedUrl: string;
+  status: number;
+  ok: boolean;
+  response: unknown;
+}> {
+  if (!config.url) {
+    throw new Error("X402_FACILITATOR_URL is required for facilitator checks.");
+  }
+
+  const supportedUrl = new URL("supported", `${config.url}/`).toString();
+  const headers = new Headers();
+  if (config.apiKey) {
+    headers.set("authorization", withBearerToken(config.apiKey));
+  }
+
+  const response = await fetch(supportedUrl, { method: "GET", headers });
+  const rawBody = await response.text();
+  return {
+    supportedUrl,
+    status: response.status,
+    ok: response.ok,
+    response: tryParseBody(rawBody, response.headers.get("content-type")),
+  };
+}
+
 async function main(): Promise<void> {
   const network = getStellarNetwork();
   const secretKey = getRequiredEnv("STELLAR_SECRET_KEY");
   const rpcUrl = process.env.STELLAR_RPC_URL?.trim() || undefined;
+  const facilitatorConfig = getFacilitatorConfig();
 
   if (network === STELLAR_PUBNET_CAIP2 && !rpcUrl) {
     throw new Error(
@@ -84,6 +152,10 @@ async function main(): Promise<void> {
             network,
             address: signer.address,
             rpcUrl: rpcUrl ?? (network === STELLAR_TESTNET_CAIP2 ? "https://soroban-testnet.stellar.org" : null),
+            facilitator: {
+              url: facilitatorConfig.url ?? null,
+              apiKeyConfigured: Boolean(facilitatorConfig.apiKey),
+            },
           },
           null,
           2,
@@ -91,6 +163,23 @@ async function main(): Promise<void> {
       },
     ],
   }));
+
+  server.tool(
+    "x402_facilitator_supported",
+    "Fetch /supported from configured facilitator (uses bearer auth when X402_FACILITATOR_API_KEY is set)",
+    {},
+    async () => {
+      const result = await fetchFacilitatorSupported(facilitatorConfig);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
 
   server.tool(
     "fetch_paid_resource",
@@ -109,6 +198,15 @@ async function main(): Promise<void> {
     },
     async ({ url, method, body, headers }) => {
       const requestHeaders = new Headers(headers ?? {});
+      if (
+        facilitatorConfig.url &&
+        facilitatorConfig.apiKey &&
+        !requestHeaders.has("authorization") &&
+        isFacilitatorRequest(url, facilitatorConfig.url)
+      ) {
+        requestHeaders.set("authorization", withBearerToken(facilitatorConfig.apiKey));
+      }
+
       const requestInit: RequestInit = {
         method,
         headers: requestHeaders,
@@ -163,6 +261,11 @@ async function main(): Promise<void> {
   console.error("x402 Stellar MCP server running over stdio");
   console.error(`wallet: ${signer.address}`);
   console.error(`network: ${network}`);
+  if (facilitatorConfig.url) {
+    console.error(
+      `facilitator: ${facilitatorConfig.url} (api key ${facilitatorConfig.apiKey ? "configured" : "not configured"})`,
+    );
+  }
 }
 
 main().catch(error => {
