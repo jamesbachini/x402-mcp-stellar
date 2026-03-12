@@ -4,7 +4,7 @@ Local MCP server (stdio) that can call x402-protected HTTP resources and automat
 
 ## Features
 
-- Stellar-only payment flow (`stellar:testnet` or `stellar:pubnet`)
+- Payment flow (`stellar:testnet` or `stellar:pubnet`)
 - Default testnet configuration
 - Mainnet-ready via env switch
 - Optional OpenZeppelin facilitator auth via env
