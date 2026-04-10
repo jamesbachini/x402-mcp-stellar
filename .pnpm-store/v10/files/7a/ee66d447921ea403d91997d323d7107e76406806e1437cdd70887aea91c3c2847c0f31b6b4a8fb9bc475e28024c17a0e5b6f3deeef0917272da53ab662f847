@@ -1,0 +1,4 @@
+
+> @ledgerhq/errors@6.32.0 build /home/runner/work/ledger-live/ledger-live/libs/ledgerjs/packages/errors
+> tsc --project tsconfig.build.json && tsc --project tsconfig.build.json -m esnext --moduleResolution bundler --outDir lib-es
+

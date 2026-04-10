@@ -1,0 +1,27 @@
+{
+    "name": "@types/proxy-addr",
+    "version": "2.0.3",
+    "description": "TypeScript definitions for proxy-addr",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/proxy-addr",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "BendingBender",
+            "githubUsername": "BendingBender",
+            "url": "https://github.com/BendingBender"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/proxy-addr"
+    },
+    "scripts": {},
+    "dependencies": {
+        "@types/node": "*"
+    },
+    "typesPublisherContentHash": "d1a7b8caa53033dcbdae1362ad55777cb45ec2a2b21a7b920b69af184fd118a4",
+    "typeScriptVersion": "4.5"
+}
