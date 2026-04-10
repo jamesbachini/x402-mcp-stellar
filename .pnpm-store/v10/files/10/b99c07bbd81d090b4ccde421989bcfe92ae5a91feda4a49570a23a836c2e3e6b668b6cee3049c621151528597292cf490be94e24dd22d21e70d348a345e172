@@ -1,0 +1,149 @@
+"use strict";
+//! Utilities for interacting with token contracts
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getTokenBalance = exports.TokenMetadata = void 0;
+const stellar_sdk_1 = require("@stellar/stellar-sdk");
+const ledger_entry_helper_js_1 = require("./ledger_entry_helper.js");
+/**
+ * TokenMetadata contains information about a token
+ *
+ * @property name - The name of the token
+ * @property symbol - The symbol of the token
+ * @property decimals - The number of decimals the token uses
+ * @property asset - The Stellar Asset if the token is a Stellar Asset Contract, undefined otherwise
+ */
+class TokenMetadata {
+    name;
+    symbol;
+    decimals;
+    asset;
+    constructor(name, symbol, decimals, asset) {
+        this.name = name;
+        this.symbol = symbol;
+        this.decimals = decimals;
+        this.asset = asset;
+    }
+    static async load(network, tokenId) {
+        const stellarRpc = new stellar_sdk_1.rpc.Server(network.rpc, network.opts);
+        const ledgerKeys = [this.ledgerKey(tokenId)];
+        const tokenMetadataEntry = await stellarRpc.getLedgerEntries(...ledgerKeys);
+        // not all reserves have emissions, but the first 3 entries are required
+        if (tokenMetadataEntry.entries.length < 1) {
+            throw new Error('Unable to load token metadata entry: failed to return entry.');
+        }
+        let tokenMetadata = undefined;
+        for (const entry of tokenMetadataEntry.entries) {
+            const ledgerEntry = entry.val;
+            const key = (0, ledger_entry_helper_js_1.decodeEntryKey)(ledgerEntry.contractData().key());
+            switch (key) {
+                case 'ContractInstance':
+                    tokenMetadata = this.fromLedgerEntryData(ledgerEntry);
+                    break;
+                default:
+                    throw Error(`Invalid metadata key: should not contain ${key}`);
+            }
+        }
+        if (tokenMetadata == undefined) {
+            throw new Error('Unable to load the token metadata.');
+        }
+        return tokenMetadata;
+    }
+    /**
+     * Create the ledgerKey for the token contract instance
+     * @param assetId - The contractId for the asset
+     * @returns The ledgerKey for the contract instance
+     */
+    static ledgerKey(assetId) {
+        return stellar_sdk_1.xdr.LedgerKey.contractData(new stellar_sdk_1.xdr.LedgerKeyContractData({
+            contract: stellar_sdk_1.Address.fromString(assetId).toScAddress(),
+            key: stellar_sdk_1.xdr.ScVal.scvLedgerKeyContractInstance(),
+            durability: stellar_sdk_1.xdr.ContractDataDurability.persistent(),
+        }));
+    }
+    /**
+     * Create a TokenMetadata object from the XDR LedgerEntryData
+     * @param ledger_entry_data - A XDR LedgerEntryData object or it's base64 string representation
+     */
+    static fromLedgerEntryData(ledger_entry_data) {
+        if (typeof ledger_entry_data == 'string') {
+            ledger_entry_data = stellar_sdk_1.xdr.LedgerEntryData.fromXDR(ledger_entry_data, 'base64');
+        }
+        const instance_val = ledger_entry_data.contractData().val().instance();
+        let name;
+        let symbol;
+        let decimal;
+        instance_val.storage()?.map((entry) => {
+            const key = (0, ledger_entry_helper_js_1.decodeEntryKey)(entry.key());
+            if (key == 'METADATA') {
+                entry
+                    .val()
+                    .map()
+                    ?.forEach((meta_entry) => {
+                    const metadataKey = (0, ledger_entry_helper_js_1.decodeEntryKey)(meta_entry.key());
+                    switch (metadataKey) {
+                        case 'name':
+                            name = (0, stellar_sdk_1.scValToNative)(meta_entry.val());
+                            return;
+                        case 'symbol':
+                            symbol = (0, stellar_sdk_1.scValToNative)(meta_entry.val());
+                            if (symbol == 'native') {
+                                symbol = 'XLM';
+                            }
+                            return;
+                        case 'decimal':
+                            decimal = (0, stellar_sdk_1.scValToNative)(meta_entry.val());
+                            return;
+                    }
+                });
+            }
+        });
+        if (name == undefined || symbol == undefined || decimal == undefined) {
+            throw Error('Token metadata malformed');
+        }
+        let asset;
+        if (instance_val.executable().toXDR().toString() ==
+            stellar_sdk_1.xdr.ContractExecutable.contractExecutableStellarAsset().toXDR().toString() &&
+            name) {
+            if (name == 'native') {
+                asset = stellar_sdk_1.Asset.native();
+            }
+            else {
+                const code_issuer = name.split(':');
+                asset = new stellar_sdk_1.Asset(code_issuer[0], code_issuer[1]);
+            }
+        }
+        return new TokenMetadata(name, symbol, decimal, asset);
+    }
+}
+exports.TokenMetadata = TokenMetadata;
+/**
+ * Fetch the token balance for a given address
+ *
+ * @param network - The Network to use
+ * @param token_id - The token contract address
+ * @param address - The address to fetch the balance for
+ * @returns - The balance
+ */
+async function getTokenBalance(network, token_id, address) {
+    // account does not get validated during simulateTx
+    const account = new stellar_sdk_1.Account('GANXGJV2RNOFMOSQ2DTI3RKDBAVERXUVFC27KW3RLVQCLB3RYNO3AAI4', '123');
+    const tx_builder = new stellar_sdk_1.TransactionBuilder(account, {
+        fee: '1000',
+        timebounds: { minTime: 0, maxTime: 0 },
+        networkPassphrase: network.passphrase,
+    });
+    tx_builder.addOperation(new stellar_sdk_1.Contract(token_id).call('balance', address.toScVal()));
+    const stellarRpc = new stellar_sdk_1.rpc.Server(network.rpc, network.opts);
+    const scval_result = await stellarRpc.simulateTransaction(tx_builder.build());
+    if (scval_result == undefined) {
+        throw Error(`unable to fetch balance for token: ${token_id}`);
+    }
+    if (stellar_sdk_1.rpc.Api.isSimulationSuccess(scval_result)) {
+        const val = (0, stellar_sdk_1.scValToNative)(scval_result.result.retval);
+        return val;
+    }
+    else {
+        throw Error(`unable to fetch balance for token: ${token_id}`);
+    }
+}
+exports.getTokenBalance = getTokenBalance;

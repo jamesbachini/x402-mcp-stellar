@@ -1,0 +1,295 @@
+import { Emissions } from '../emissions.js';
+import { Network, Version } from '../index.js';
+import { ReserveConfig, ReserveData } from './reserve_types.js';
+/**
+ * Manage ledger data for a reserve in a Blend pool
+ */
+export declare abstract class Reserve {
+    /**
+     * The contract address of the Pool the reserve belongs to
+     */
+    poolId: string;
+    /**
+     * The contract address of the Reserve asset
+     */
+    assetId: string;
+    /**
+     * The configuration of the Reserve
+     */
+    config: ReserveConfig;
+    /**
+     * The data of the Reserve
+     */
+    data: ReserveData;
+    /**
+     * The borrow emissions for the Reserve. This will be undefined if there are no borrow emissions
+     */
+    borrowEmissions: Emissions | undefined;
+    /**
+     * The supply emissions for the Reserve. This will be undefined if there are no supply emissions
+     */
+    supplyEmissions: Emissions | undefined;
+    /**
+     * The current APR being charged to borrowers
+     */
+    borrowApr: number;
+    /**
+     * The estimated APY for borrowers based on the current APR and
+     * a daily compounding period
+     */
+    estBorrowApy: number;
+    /**
+     * The current APR being earned by suppliers
+     */
+    supplyApr: number;
+    /**
+     * The estimated APY for suppliers based on the current APR and
+     * a weekly compounding period
+     */
+    estSupplyApy: number;
+    /**
+     * The ledger number of the latest ledger entry
+     */
+    latestLedger: number;
+    constructor(
+    /**
+     * The contract address of the Pool the reserve belongs to
+     */
+    poolId: string, 
+    /**
+     * The contract address of the Reserve asset
+     */
+    assetId: string, 
+    /**
+     * The configuration of the Reserve
+     */
+    config: ReserveConfig, 
+    /**
+     * The data of the Reserve
+     */
+    data: ReserveData, 
+    /**
+     * The borrow emissions for the Reserve. This will be undefined if there are no borrow emissions
+     */
+    borrowEmissions: Emissions | undefined, 
+    /**
+     * The supply emissions for the Reserve. This will be undefined if there are no supply emissions
+     */
+    supplyEmissions: Emissions | undefined, 
+    /**
+     * The current APR being charged to borrowers
+     */
+    borrowApr: number, 
+    /**
+     * The estimated APY for borrowers based on the current APR and
+     * a daily compounding period
+     */
+    estBorrowApy: number, 
+    /**
+     * The current APR being earned by suppliers
+     */
+    supplyApr: number, 
+    /**
+     * The estimated APY for suppliers based on the current APR and
+     * a weekly compounding period
+     */
+    estSupplyApy: number, 
+    /**
+     * The ledger number of the latest ledger entry
+     */
+    latestLedger: number);
+    /**
+     * The decimals used for b and d rate values
+     */
+    abstract readonly rateDecimals: number;
+    /**
+     * The decimals used for the IR modifier value
+     */
+    abstract readonly irmodDecimals: number;
+    /**
+     * The version of the reserve
+     */
+    abstract readonly version: Version;
+    /********** Data Helpers **********/
+    /**
+     * Get the borrow (dToken) emission index
+     */
+    getDTokenEmissionIndex(): number;
+    /**
+     * Get the supply (bToken) emission index
+     */
+    getBTokenEmissionIndex(): number;
+    /**
+     * Get the liability factor as a floating point decimal percentage.
+     * (e.g 1.23 == 95%). This inverts the stored value on chain to make
+     * computing the effective liability easier.
+     *
+     * The effective liability of a position is:
+     * ```
+     * effective_liability = liability * liability_factor
+     * ```
+     */
+    getLiabilityFactor(): number;
+    /**
+     * Get the collateral factor as a floating point decimal percentage
+     * (e.g 0.95 == 95%)
+     *
+     * The effective collateral of a positions is:
+     * ```
+     * effective_collateral = collateral * collateral_factor
+     * ```
+     */
+    getCollateralFactor(): number;
+    /**
+     * Get the utilization of the Reserve as a fixed point number
+     */
+    getUtilization(): bigint;
+    /**
+     * Get the utilization of the Reserve as a floating point number
+     */
+    getUtilizationFloat(): number;
+    /**
+     * Get the total liabilities of the Reserve
+     */
+    totalLiabilities(): bigint;
+    /**
+     * Get the total liabilities of the Reserve as a floating point number
+     */
+    totalLiabilitiesFloat(): number;
+    /**
+     * Get the total supply of the Reserve
+     */
+    totalSupply(): bigint;
+    /**
+     * Get the total supply of the Reserve as a floating point number
+     */
+    totalSupplyFloat(): number;
+    /********** Conversion Functions ***********/
+    /**
+     * Convert dTokens to assets
+     * @param dTokens - The number of dTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromDToken(dTokens: bigint | undefined): bigint;
+    /**
+     * Convert bTokens to assets
+     * @param bTokens - The number of bTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromBToken(bTokens: bigint | undefined): bigint;
+    /**
+     * Convert dTokens to their corresponding effective asset value. This takes
+     * into account the liability factor
+     * @param dTokens - The number of dTokens to convert
+     * @returns The liability amount in assets
+     */
+    toEffectiveAssetFromDToken(dTokens: bigint | undefined): bigint;
+    /**
+     * Convert bTokens to their corresponding effective asset value. This takes
+     * into account the collateral factor
+     * @param bTokens - The number of bTokens to convert
+     * @returns The collateral amount in assets
+     */
+    toEffectiveAssetFromBToken(bTokens: bigint | undefined): bigint;
+    /**
+     * Convert dTokens to assets as a floating point number
+     * @param dTokens - The number of dTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromDTokenFloat(dTokens: bigint | undefined): number;
+    /**
+     * Convert bTokens to assets as a floating point number
+     * @param bTokens - The number of bTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromBTokenFloat(bTokens: bigint | undefined): number;
+    /**
+     * Convert dTokens to their corresponding effective asset value as a floating point number.
+     * This takes into account the liability factor.
+     * @param dTokens - The number of dTokens to convert
+     * @returns The liability amount in assets
+     */
+    toEffectiveAssetFromDTokenFloat(dTokens: bigint | undefined): number;
+    /**
+     * Convert bTokens to their corresponding effective asset value. This takes
+     * into account the collateral factor
+     * @param bTokens - The number of bTokens to convert
+     * @returns The collateral amount in assets
+     */
+    toEffectiveAssetFromBTokenFloat(bTokens: bigint | undefined): number;
+    /**
+     * Convert an asset amount to dTokens taking the floor
+     * @param asset - The asset amount to convert
+     * @returns The number of dTokens
+     */
+    toDTokensFromAssetFloor(asset: bigint | undefined): bigint;
+    /**
+     * Convert an asset amount to dTokens taking the ceiling
+     * @param asset - The asset amount to convert
+     * @returns The number of dTokens
+     */
+    toDTokensFromAssetCeil(asset: bigint | undefined): bigint;
+    /**
+     * Convert an asset amount to bTokens taking the floor
+     * @param asset - The asset amount to convert
+     * @returns The number of bTokens
+     */
+    toBTokensFromAssetFloor(asset: bigint | undefined): bigint;
+    /**
+     * Convert an asset amount to bTokens taking the ceiling
+     * @param asset - The asset amount to convert
+     * @returns The number of bTokens
+     */
+    toBTokensFromAssetCeil(asset: bigint | undefined): bigint;
+    /********** Math Helpers **********/
+    /**
+     * Set the borrow and supply APRs and APYs based on the current state of the Reserve
+     *
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number w/ 7 decimals)
+     * @returns the APR as a bigint with 7 decimals.
+     */
+    setRates(backstopTakeRate: bigint): bigint;
+    /**
+     * Accrue interest on the Reserve to the given timestamp, or now if no timestamp is provided.
+     *
+     * Calls `setRates` internally and updates ReserveData based on the accrual.
+     *
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number)
+     * @param timestamp - The timestamp to accrue interest to (in seconds since epoch)
+     */
+    accrue(backstopTakeRate: bigint, timestamp?: number | undefined): void;
+}
+export declare class ReserveV1 extends Reserve {
+    readonly rateDecimals: number;
+    readonly irmodDecimals: number;
+    readonly version: Version;
+    /**
+     * Load a Reserve from asset `assetId` from the pool `poolId` on the network `network`
+     * @param network - The network configuration
+     * @param poolId - The contract address of the Pool
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number with 7 decimals)
+     * @param assetId - The contract address of the Reserve asset
+     * @param index - The index of the Reserve in the Pool
+     * @param timestamp - The timestamp to project the Reserve data to (in seconds since epoch)
+     * @returns A Reserve object
+     */
+    static load(network: Network, poolId: string, backstopTakeRate: bigint, assetId: string, index: number, timestamp?: number): Promise<Reserve>;
+    static loadList(network: Network, poolId: string, backstopTakeRate: bigint, reserveList: string[], timestamp?: number): Promise<Reserve[]>;
+}
+export declare class ReserveV2 extends Reserve {
+    readonly rateDecimals: number;
+    readonly irmodDecimals: number;
+    readonly version: Version;
+    /**
+     * Load a Reserve from asset `assetId` from the pool `poolId` on the network `network`
+     * @param network - The network configuration
+     * @param poolId - The contract address of the Pool
+     * @param backstopTakeRate - The backstop take rate of the pool
+     * @param assetId - The contract address of the Reserve asset
+     * @param index - The index of the Reserve in the Pool
+     * @param timestamp - The timestamp to project the Reserve data to (in seconds since epoch)
+     * @returns A Reserve object
+     */
+    static load(network: Network, poolId: string, backstopTakeRate: bigint, assetId: string, index: number, timestamp?: number): Promise<Reserve>;
+    static loadList(network: Network, poolId: string, backstopTakeRate: bigint, reserveList: string[], timestamp?: number): Promise<Reserve[]>;
+}

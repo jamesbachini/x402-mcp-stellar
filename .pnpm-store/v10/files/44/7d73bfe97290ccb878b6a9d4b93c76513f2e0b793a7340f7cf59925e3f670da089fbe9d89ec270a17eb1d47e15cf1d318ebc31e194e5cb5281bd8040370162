@@ -1,0 +1,717 @@
+import { rpc } from '@stellar/stellar-sdk';
+import { EmissionConfig, EmissionData, EmissionDataV2, EmissionsV1, EmissionsV2, } from '../emissions.js';
+import { Version } from '../index.js';
+import { decodeEntryKey } from '../ledger_entry_helper.js';
+import * as FixedMath from '../math.js';
+import { getEmissionIndex, getReserveId, ReserveConfig, ReserveConfigV2, ReserveData, ReserveEmissionConfig, ReserveEmissionData, } from './reserve_types.js';
+/**
+ * Manage ledger data for a reserve in a Blend pool
+ */
+export class Reserve {
+    poolId;
+    assetId;
+    config;
+    data;
+    borrowEmissions;
+    supplyEmissions;
+    borrowApr;
+    estBorrowApy;
+    supplyApr;
+    estSupplyApy;
+    latestLedger;
+    constructor(
+    /**
+     * The contract address of the Pool the reserve belongs to
+     */
+    poolId, 
+    /**
+     * The contract address of the Reserve asset
+     */
+    assetId, 
+    /**
+     * The configuration of the Reserve
+     */
+    config, 
+    /**
+     * The data of the Reserve
+     */
+    data, 
+    /**
+     * The borrow emissions for the Reserve. This will be undefined if there are no borrow emissions
+     */
+    borrowEmissions, 
+    /**
+     * The supply emissions for the Reserve. This will be undefined if there are no supply emissions
+     */
+    supplyEmissions, 
+    /**
+     * The current APR being charged to borrowers
+     */
+    borrowApr, 
+    /**
+     * The estimated APY for borrowers based on the current APR and
+     * a daily compounding period
+     */
+    estBorrowApy, 
+    /**
+     * The current APR being earned by suppliers
+     */
+    supplyApr, 
+    /**
+     * The estimated APY for suppliers based on the current APR and
+     * a weekly compounding period
+     */
+    estSupplyApy, 
+    /**
+     * The ledger number of the latest ledger entry
+     */
+    latestLedger) {
+        this.poolId = poolId;
+        this.assetId = assetId;
+        this.config = config;
+        this.data = data;
+        this.borrowEmissions = borrowEmissions;
+        this.supplyEmissions = supplyEmissions;
+        this.borrowApr = borrowApr;
+        this.estBorrowApy = estBorrowApy;
+        this.supplyApr = supplyApr;
+        this.estSupplyApy = estSupplyApy;
+        this.latestLedger = latestLedger;
+    }
+    /********** Data Helpers **********/
+    /**
+     * Get the borrow (dToken) emission index
+     */
+    getDTokenEmissionIndex() {
+        return this.config.index * 2;
+    }
+    /**
+     * Get the supply (bToken) emission index
+     */
+    getBTokenEmissionIndex() {
+        return this.config.index * 2 + 1;
+    }
+    /**
+     * Get the liability factor as a floating point decimal percentage.
+     * (e.g 1.23 == 95%). This inverts the stored value on chain to make
+     * computing the effective liability easier.
+     *
+     * The effective liability of a position is:
+     * ```
+     * effective_liability = liability * liability_factor
+     * ```
+     */
+    getLiabilityFactor() {
+        return 1 / FixedMath.toFloat(BigInt(this.config.l_factor), 7);
+    }
+    /**
+     * Get the collateral factor as a floating point decimal percentage
+     * (e.g 0.95 == 95%)
+     *
+     * The effective collateral of a positions is:
+     * ```
+     * effective_collateral = collateral * collateral_factor
+     * ```
+     */
+    getCollateralFactor() {
+        return FixedMath.toFloat(BigInt(this.config.c_factor), 7);
+    }
+    /**
+     * Get the utilization of the Reserve as a fixed point number
+     */
+    getUtilization() {
+        const totalSupply = this.totalSupply();
+        if (totalSupply === BigInt(0)) {
+            return BigInt(0);
+        }
+        else {
+            return FixedMath.divCeil(this.totalLiabilities(), totalSupply, FixedMath.toFixed(1, this.config.decimals));
+        }
+    }
+    /**
+     * Get the utilization of the Reserve as a floating point number
+     */
+    getUtilizationFloat() {
+        const totalSupply = this.totalSupply();
+        if (totalSupply === BigInt(0)) {
+            return 0;
+        }
+        else {
+            return FixedMath.toFloat(FixedMath.divCeil(this.totalLiabilities(), totalSupply, FixedMath.toFixed(1, this.config.decimals)), 7);
+        }
+    }
+    /**
+     * Get the total liabilities of the Reserve
+     */
+    totalLiabilities() {
+        return this.toAssetFromDToken(this.data.dSupply);
+    }
+    /**
+     * Get the total liabilities of the Reserve as a floating point number
+     */
+    totalLiabilitiesFloat() {
+        return this.toAssetFromDTokenFloat(this.data.dSupply);
+    }
+    /**
+     * Get the total supply of the Reserve
+     */
+    totalSupply() {
+        return this.toAssetFromBToken(this.data.bSupply);
+    }
+    /**
+     * Get the total supply of the Reserve as a floating point number
+     */
+    totalSupplyFloat() {
+        return this.toAssetFromBTokenFloat(this.data.bSupply);
+    }
+    /********** Conversion Functions ***********/
+    /**
+     * Convert dTokens to assets
+     * @param dTokens - The number of dTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromDToken(dTokens) {
+        if (dTokens === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.mulCeil(dTokens, this.data.dRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /**
+     * Convert bTokens to assets
+     * @param bTokens - The number of bTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromBToken(bTokens) {
+        if (bTokens === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.mulFloor(bTokens, this.data.bRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /**
+     * Convert dTokens to their corresponding effective asset value. This takes
+     * into account the liability factor
+     * @param dTokens - The number of dTokens to convert
+     * @returns The liability amount in assets
+     */
+    toEffectiveAssetFromDToken(dTokens) {
+        if (dTokens === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.divCeil(this.toAssetFromDToken(dTokens), BigInt(this.config.l_factor), FixedMath.SCALAR_7);
+    }
+    /**
+     * Convert bTokens to their corresponding effective asset value. This takes
+     * into account the collateral factor
+     * @param bTokens - The number of bTokens to convert
+     * @returns The collateral amount in assets
+     */
+    toEffectiveAssetFromBToken(bTokens) {
+        if (bTokens === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.mulFloor(this.toAssetFromBToken(bTokens), BigInt(this.config.c_factor), FixedMath.SCALAR_7);
+    }
+    /**
+     * Convert dTokens to assets as a floating point number
+     * @param dTokens - The number of dTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromDTokenFloat(dTokens) {
+        return FixedMath.toFloat(this.toAssetFromDToken(dTokens), this.config.decimals);
+    }
+    /**
+     * Convert bTokens to assets as a floating point number
+     * @param bTokens - The number of bTokens to convert
+     * @returns The asset amount
+     */
+    toAssetFromBTokenFloat(bTokens) {
+        return FixedMath.toFloat(this.toAssetFromBToken(bTokens), this.config.decimals);
+    }
+    /**
+     * Convert dTokens to their corresponding effective asset value as a floating point number.
+     * This takes into account the liability factor.
+     * @param dTokens - The number of dTokens to convert
+     * @returns The liability amount in assets
+     */
+    toEffectiveAssetFromDTokenFloat(dTokens) {
+        return FixedMath.toFloat(this.toEffectiveAssetFromDToken(dTokens), this.config.decimals);
+    }
+    /**
+     * Convert bTokens to their corresponding effective asset value. This takes
+     * into account the collateral factor
+     * @param bTokens - The number of bTokens to convert
+     * @returns The collateral amount in assets
+     */
+    toEffectiveAssetFromBTokenFloat(bTokens) {
+        return FixedMath.toFloat(this.toEffectiveAssetFromBToken(bTokens), this.config.decimals);
+    }
+    /**
+     * Convert an asset amount to dTokens taking the floor
+     * @param asset - The asset amount to convert
+     * @returns The number of dTokens
+     */
+    toDTokensFromAssetFloor(asset) {
+        if (asset === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.divFloor(asset, this.data.dRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /**
+     * Convert an asset amount to dTokens taking the ceiling
+     * @param asset - The asset amount to convert
+     * @returns The number of dTokens
+     */
+    toDTokensFromAssetCeil(asset) {
+        if (asset === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.divCeil(asset, this.data.dRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /**
+     * Convert an asset amount to bTokens taking the floor
+     * @param asset - The asset amount to convert
+     * @returns The number of bTokens
+     */
+    toBTokensFromAssetFloor(asset) {
+        if (asset === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.divFloor(asset, this.data.bRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /**
+     * Convert an asset amount to bTokens taking the ceiling
+     * @param asset - The asset amount to convert
+     * @returns The number of bTokens
+     */
+    toBTokensFromAssetCeil(asset) {
+        if (asset === undefined) {
+            return BigInt(0);
+        }
+        return FixedMath.divCeil(asset, this.data.bRate, FixedMath.toFixed(1, this.rateDecimals));
+    }
+    /********** Math Helpers **********/
+    /**
+     * Set the borrow and supply APRs and APYs based on the current state of the Reserve
+     *
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number w/ 7 decimals)
+     * @returns the APR as a bigint with 7 decimals.
+     */
+    setRates(backstopTakeRate) {
+        const curUtil = this.getUtilization();
+        if (curUtil === BigInt(0)) {
+            this.borrowApr = FixedMath.toFloat(BigInt(this.config.r_base), 7);
+            this.supplyApr = 0;
+            return 0n;
+        }
+        const IR_MOD_SCALAR = FixedMath.toFixed(1, this.irmodDecimals);
+        let curIr;
+        const targetUtil = BigInt(this.config.util);
+        const fixed_95_percent = BigInt(9_500_000);
+        const fixed_5_percent = BigInt(500_000);
+        // calculate current IR
+        if (curUtil <= targetUtil) {
+            const utilScalar = FixedMath.divCeil(curUtil, targetUtil, FixedMath.SCALAR_7);
+            const baseRate = FixedMath.mulCeil(utilScalar, BigInt(this.config.r_one), FixedMath.SCALAR_7) +
+                BigInt(this.config.r_base);
+            curIr = FixedMath.mulCeil(baseRate, this.data.interestRateModifier, IR_MOD_SCALAR);
+        }
+        else if (curUtil <= fixed_95_percent) {
+            const utilScalar = FixedMath.divCeil(curUtil - targetUtil, fixed_95_percent - targetUtil, FixedMath.SCALAR_7);
+            const baseRate = FixedMath.mulCeil(utilScalar, BigInt(this.config.r_two), FixedMath.SCALAR_7) +
+                BigInt(this.config.r_one) +
+                BigInt(this.config.r_base);
+            curIr = FixedMath.mulCeil(baseRate, this.data.interestRateModifier, IR_MOD_SCALAR);
+        }
+        else {
+            const utilScalar = FixedMath.divCeil(curUtil - fixed_95_percent, fixed_5_percent, FixedMath.SCALAR_7);
+            const extraRate = FixedMath.mulCeil(utilScalar, BigInt(this.config.r_three), FixedMath.SCALAR_7);
+            const intersection = FixedMath.mulCeil(this.data.interestRateModifier, BigInt(this.config.r_two) + BigInt(this.config.r_one) + BigInt(this.config.r_base), IR_MOD_SCALAR);
+            curIr = extraRate + intersection;
+        }
+        const borrowApr = FixedMath.toFloat(curIr, 7);
+        const supplyCapture = FixedMath.mulFloor(FixedMath.SCALAR_7 - backstopTakeRate, curUtil, FixedMath.SCALAR_7);
+        const supplyApr = FixedMath.toFloat(FixedMath.mulFloor(curIr, supplyCapture, FixedMath.SCALAR_7), 7);
+        // est borrow apy at a higher compounding rate than supply such that each is a "safer" estimate
+        // for the user
+        const estBorrowApy = (1 + borrowApr / 365) ** 365 - 1;
+        const estSupplyApy = (1 + supplyApr / 52) ** 52 - 1;
+        this.borrowApr = borrowApr;
+        this.supplyApr = supplyApr;
+        this.estBorrowApy = estBorrowApy;
+        this.estSupplyApy = estSupplyApy;
+        return curIr;
+    }
+    /**
+     * Accrue interest on the Reserve to the given timestamp, or now if no timestamp is provided.
+     *
+     * Calls `setRates` internally and updates ReserveData based on the accrual.
+     *
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number)
+     * @param timestamp - The timestamp to accrue interest to (in seconds since epoch)
+     */
+    accrue(backstopTakeRate, timestamp) {
+        if (timestamp === undefined) {
+            timestamp = Math.floor(Date.now() / 1000);
+        }
+        const curIr = this.setRates(backstopTakeRate);
+        const curUtil = this.getUtilization();
+        if (curUtil === BigInt(0)) {
+            this.data.lastTime = timestamp;
+            return;
+        }
+        const IR_MOD_SCALAR = FixedMath.toFixed(1, this.irmodDecimals);
+        const RATE_SCALAR = FixedMath.toFixed(1, this.rateDecimals);
+        const targetUtil = BigInt(this.config.util);
+        // update rate_modifier on reserve data
+        const deltaTime = timestamp - this.data.lastTime;
+        if (deltaTime <= 0) {
+            return;
+        }
+        if (curUtil > targetUtil) {
+            // rate modifier increasing - scale to IR_MOD_SCALAR
+            const utilDif = FixedMath.mulFloor(IR_MOD_SCALAR, curUtil - targetUtil, FixedMath.SCALAR_7);
+            // util and reactivity are 7 decimals
+            const utilError = BigInt(deltaTime) * utilDif;
+            const rateDif = FixedMath.mulFloor(utilError, BigInt(this.config.reactivity), FixedMath.SCALAR_7);
+            const nextIrMod = this.data.interestRateModifier + rateDif;
+            const irModMax = BigInt(10) * IR_MOD_SCALAR;
+            this.data.interestRateModifier = nextIrMod > irModMax ? irModMax : nextIrMod;
+        }
+        else if (curUtil < targetUtil) {
+            // rate modifier decreasing - scale to IR_MOD_SCALAR
+            const utilDif = FixedMath.mulFloor(IR_MOD_SCALAR, targetUtil - curUtil, FixedMath.SCALAR_7);
+            // util and reactivity are 7 decimals
+            const utilError = BigInt(deltaTime) * utilDif;
+            const rateDif = FixedMath.mulCeil(utilError, BigInt(this.config.reactivity), FixedMath.SCALAR_7);
+            const nextIrMod = this.data.interestRateModifier - rateDif;
+            const irModMin = IR_MOD_SCALAR / 10n;
+            this.data.interestRateModifier = nextIrMod < irModMin ? irModMin : nextIrMod;
+        }
+        // calc accrual amount over blocks
+        // scale time weight to RATE_SCALAR
+        const timeWeight = (BigInt(deltaTime) * RATE_SCALAR) / BigInt(31536000);
+        // curIr is 7 decimals
+        const accrualRate = RATE_SCALAR + FixedMath.mulCeil(timeWeight, curIr, FixedMath.SCALAR_7);
+        // apply accrual to reserveData
+        const preUpdateSupply = this.totalSupply();
+        const preUpdateLiabilities = this.totalLiabilities();
+        this.data.dRate = FixedMath.mulCeil(accrualRate, this.data.dRate, RATE_SCALAR);
+        const accruedInterest = this.totalLiabilities() - preUpdateLiabilities;
+        if (accruedInterest > 0) {
+            const newBackstopCredit = FixedMath.mulFloor(accruedInterest, backstopTakeRate, FixedMath.SCALAR_7);
+            this.data.backstopCredit += newBackstopCredit;
+            this.data.bRate = FixedMath.divFloor(preUpdateSupply + accruedInterest - newBackstopCredit, this.data.bSupply, RATE_SCALAR);
+        }
+        this.data.lastTime = timestamp;
+    }
+}
+export class ReserveV1 extends Reserve {
+    rateDecimals = 9;
+    irmodDecimals = 9;
+    version = Version.V1;
+    /**
+     * Load a Reserve from asset `assetId` from the pool `poolId` on the network `network`
+     * @param network - The network configuration
+     * @param poolId - The contract address of the Pool
+     * @param backstopTakeRate - The backstop take rate (as a fixed point number with 7 decimals)
+     * @param assetId - The contract address of the Reserve asset
+     * @param index - The index of the Reserve in the Pool
+     * @param timestamp - The timestamp to project the Reserve data to (in seconds since epoch)
+     * @returns A Reserve object
+     */
+    static async load(network, poolId, backstopTakeRate, assetId, index, timestamp) {
+        const stellarRpc = new rpc.Server(network.rpc, network.opts);
+        const dTokenIndex = index * 2;
+        const bTokenIndex = index * 2 + 1;
+        const ledgerKeys = [
+            ReserveConfig.ledgerKey(poolId, assetId),
+            ReserveData.ledgerKey(poolId, assetId),
+            ReserveEmissionConfig.ledgerKey(poolId, bTokenIndex),
+            ReserveEmissionData.ledgerKey(poolId, bTokenIndex),
+            ReserveEmissionConfig.ledgerKey(poolId, dTokenIndex),
+            ReserveEmissionData.ledgerKey(poolId, dTokenIndex),
+        ];
+        const reserveLedgerEntries = await stellarRpc.getLedgerEntries(...ledgerKeys);
+        // not all reserves have emissions, but the first 2 entries are required
+        if (reserveLedgerEntries.entries.length < 2) {
+            throw new Error('Unable to load reserve: missing ledger entries.');
+        }
+        let reserveConfig;
+        let reserveData;
+        let emissionBorrowConfig;
+        let emissionBorrowData;
+        let emissionSupplyConfig;
+        let emissionSupplyData;
+        for (const entry of reserveLedgerEntries.entries) {
+            const ledgerEntry = entry.val;
+            const key = decodeEntryKey(ledgerEntry.contractData().key());
+            switch (key) {
+                case 'ResConfig':
+                    reserveConfig = ReserveConfig.fromLedgerEntryData(ledgerEntry);
+                    break;
+                case 'ResData':
+                    reserveData = ReserveData.fromLedgerEntryData(ledgerEntry);
+                    break;
+                case `EmisConfig`: {
+                    const index = getEmissionIndex(ledgerEntry);
+                    if (index % 2 == 0) {
+                        emissionBorrowConfig = EmissionConfig.fromLedgerEntryData(ledgerEntry);
+                    }
+                    else {
+                        emissionSupplyConfig = EmissionConfig.fromLedgerEntryData(ledgerEntry);
+                    }
+                    break;
+                }
+                case `EmisData`: {
+                    const index = getEmissionIndex(ledgerEntry);
+                    if (index % 2 == 0) {
+                        emissionBorrowData = EmissionData.fromLedgerEntryData(ledgerEntry);
+                    }
+                    else {
+                        emissionSupplyData = EmissionData.fromLedgerEntryData(ledgerEntry);
+                    }
+                    break;
+                }
+                default:
+                    throw Error(`Invalid reserve key: should not contain ${key}`);
+            }
+        }
+        if (reserveConfig == undefined || reserveData == undefined) {
+            throw new Error('Unable to load reserve: missing data.');
+        }
+        let borrowEmissions = undefined;
+        if (emissionBorrowConfig && emissionBorrowData) {
+            borrowEmissions = new EmissionsV1(emissionBorrowConfig, emissionBorrowData, reserveLedgerEntries.latestLedger);
+            borrowEmissions.accrue(reserveData.dSupply, reserveConfig.decimals, timestamp);
+        }
+        let supplyEmissions = undefined;
+        if (emissionSupplyConfig && emissionSupplyData) {
+            supplyEmissions = new EmissionsV1(emissionSupplyConfig, emissionSupplyData, reserveLedgerEntries.latestLedger);
+            supplyEmissions.accrue(reserveData.bSupply, reserveConfig.decimals, timestamp);
+        }
+        const reserve = new ReserveV1(poolId, assetId, reserveConfig, reserveData, borrowEmissions, supplyEmissions, 0, 0, 0, 0, reserveLedgerEntries.latestLedger);
+        reserve.accrue(backstopTakeRate, timestamp);
+        return reserve;
+    }
+    static async loadList(network, poolId, backstopTakeRate, reserveList, timestamp) {
+        const reserves = new Array();
+        const stellarRpc = new rpc.Server(network.rpc, network.opts);
+        const ledgerKeys = [];
+        for (const [index, reserveId] of reserveList.entries()) {
+            const dTokenIndex = index * 2;
+            const bTokenIndex = index * 2 + 1;
+            ledgerKeys.push(...[
+                ReserveConfig.ledgerKey(poolId, reserveId),
+                ReserveData.ledgerKey(poolId, reserveId),
+                ReserveEmissionConfig.ledgerKey(poolId, bTokenIndex),
+                ReserveEmissionData.ledgerKey(poolId, bTokenIndex),
+                ReserveEmissionConfig.ledgerKey(poolId, dTokenIndex),
+                ReserveEmissionData.ledgerKey(poolId, dTokenIndex),
+            ]);
+        }
+        const reserveLedgerEntries = await stellarRpc.getLedgerEntries(...ledgerKeys);
+        const reserveConfigMap = new Map();
+        const reserveDataMap = new Map();
+        const emissionConfigMap = new Map();
+        const emissionDataMap = new Map();
+        for (const entry of reserveLedgerEntries.entries) {
+            const ledgerEntry = entry.val;
+            const key = decodeEntryKey(ledgerEntry.contractData().key());
+            switch (key) {
+                case 'ResConfig': {
+                    const reserveId = getReserveId(ledgerEntry);
+                    reserveConfigMap.set(reserveId, ReserveConfig.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                case 'ResData': {
+                    const reserveId = getReserveId(ledgerEntry);
+                    reserveDataMap.set(reserveId, ReserveData.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                case `EmisConfig`: {
+                    const emissionIndex = getEmissionIndex(ledgerEntry);
+                    emissionConfigMap.set(emissionIndex, EmissionConfig.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                case `EmisData`: {
+                    const emissionIndex = getEmissionIndex(ledgerEntry);
+                    emissionDataMap.set(emissionIndex, EmissionData.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                default:
+                    throw Error(`Invalid reserve key: should not contain ${key}`);
+            }
+        }
+        for (const [index, reserveId] of reserveList.entries()) {
+            const reserveConfig = reserveConfigMap.get(reserveId);
+            const reserveData = reserveDataMap.get(reserveId);
+            if (reserveConfig == undefined || reserveData == undefined) {
+                throw new Error('Unable to load reserve: missing data.');
+            }
+            const dTokenIndex = index * 2;
+            const bTokenIndex = index * 2 + 1;
+            const emissionBorrowConfig = emissionConfigMap.get(dTokenIndex);
+            const emissionBorrowData = emissionDataMap.get(dTokenIndex);
+            const emissionSupplyConfig = emissionConfigMap.get(bTokenIndex);
+            const emissionSupplyData = emissionDataMap.get(bTokenIndex);
+            let borrowEmissions = undefined;
+            if (emissionBorrowConfig && emissionBorrowData) {
+                borrowEmissions = new EmissionsV1(emissionBorrowConfig, emissionBorrowData, reserveLedgerEntries.latestLedger);
+                borrowEmissions.accrue(reserveData.dSupply, reserveConfig.decimals, timestamp);
+            }
+            let supplyEmissions = undefined;
+            if (emissionSupplyConfig && emissionSupplyData) {
+                supplyEmissions = new EmissionsV1(emissionSupplyConfig, emissionSupplyData, reserveLedgerEntries.latestLedger);
+                supplyEmissions.accrue(reserveData.bSupply, reserveConfig.decimals, timestamp);
+            }
+            const reserve = new ReserveV1(poolId, reserveId, reserveConfig, reserveData, borrowEmissions, supplyEmissions, 0, 0, 0, 0, reserveLedgerEntries.latestLedger);
+            reserve.accrue(backstopTakeRate, timestamp);
+            reserves.push(reserve);
+        }
+        return reserves;
+    }
+}
+export class ReserveV2 extends Reserve {
+    rateDecimals = 12;
+    irmodDecimals = 7;
+    version = Version.V2;
+    /**
+     * Load a Reserve from asset `assetId` from the pool `poolId` on the network `network`
+     * @param network - The network configuration
+     * @param poolId - The contract address of the Pool
+     * @param backstopTakeRate - The backstop take rate of the pool
+     * @param assetId - The contract address of the Reserve asset
+     * @param index - The index of the Reserve in the Pool
+     * @param timestamp - The timestamp to project the Reserve data to (in seconds since epoch)
+     * @returns A Reserve object
+     */
+    static async load(network, poolId, backstopTakeRate, assetId, index, timestamp) {
+        const stellarRpc = new rpc.Server(network.rpc, network.opts);
+        const dTokenIndex = index * 2;
+        const bTokenIndex = index * 2 + 1;
+        const ledgerKeys = [
+            ReserveConfig.ledgerKey(poolId, assetId),
+            ReserveData.ledgerKey(poolId, assetId),
+            ReserveEmissionData.ledgerKey(poolId, bTokenIndex),
+            ReserveEmissionData.ledgerKey(poolId, dTokenIndex),
+        ];
+        const reserveLedgerEntries = await stellarRpc.getLedgerEntries(...ledgerKeys);
+        // not all reserves have emissions, but the first 2 entries are required
+        if (reserveLedgerEntries.entries.length < 2) {
+            throw new Error('Unable to load reserve: missing ledger entries.');
+        }
+        let reserveConfig;
+        let reserveData;
+        let emissionBorrowData;
+        let emissionSupplyData;
+        for (const entry of reserveLedgerEntries.entries) {
+            const ledgerEntry = entry.val;
+            const key = decodeEntryKey(ledgerEntry.contractData().key());
+            switch (key) {
+                case 'ResConfig':
+                    reserveConfig = ReserveConfig.fromLedgerEntryData(ledgerEntry);
+                    break;
+                case 'ResData':
+                    reserveData = ReserveData.fromLedgerEntryData(ledgerEntry);
+                    break;
+                case `EmisData`: {
+                    const index = getEmissionIndex(ledgerEntry);
+                    if (index % 2 == 0) {
+                        emissionBorrowData = EmissionDataV2.fromLedgerEntryData(ledgerEntry);
+                    }
+                    else {
+                        emissionSupplyData = EmissionDataV2.fromLedgerEntryData(ledgerEntry);
+                    }
+                    break;
+                }
+                default:
+                    throw Error(`Invalid reserve key: should not contain ${key}`);
+            }
+        }
+        if (reserveConfig == undefined || reserveData == undefined) {
+            throw new Error('Unable to load reserve: missing data.');
+        }
+        let borrowEmissions = undefined;
+        if (emissionBorrowData) {
+            borrowEmissions = new EmissionsV2(emissionBorrowData, reserveLedgerEntries.latestLedger);
+            borrowEmissions.accrue(reserveData.dSupply, reserveConfig.decimals, timestamp);
+        }
+        let supplyEmissions = undefined;
+        if (emissionSupplyData) {
+            supplyEmissions = new EmissionsV2(emissionSupplyData, reserveLedgerEntries.latestLedger);
+            supplyEmissions.accrue(reserveData.bSupply, reserveConfig.decimals, timestamp);
+        }
+        const reserve = new ReserveV2(poolId, assetId, reserveConfig, reserveData, borrowEmissions, supplyEmissions, 0, 0, 0, 0, reserveLedgerEntries.latestLedger);
+        reserve.accrue(backstopTakeRate, timestamp);
+        return reserve;
+    }
+    static async loadList(network, poolId, backstopTakeRate, reserveList, timestamp) {
+        const reserves = new Array();
+        const stellarRpc = new rpc.Server(network.rpc, network.opts);
+        const ledgerKeys = [];
+        for (const [index, reserveId] of reserveList.entries()) {
+            const dTokenIndex = index * 2;
+            const bTokenIndex = index * 2 + 1;
+            ledgerKeys.push(...[
+                ReserveConfigV2.ledgerKey(poolId, reserveId),
+                ReserveData.ledgerKey(poolId, reserveId),
+                ReserveEmissionConfig.ledgerKey(poolId, bTokenIndex),
+                ReserveEmissionData.ledgerKey(poolId, bTokenIndex),
+                ReserveEmissionConfig.ledgerKey(poolId, dTokenIndex),
+                ReserveEmissionData.ledgerKey(poolId, dTokenIndex),
+            ]);
+        }
+        const reserveLedgerEntries = await stellarRpc.getLedgerEntries(...ledgerKeys);
+        const reserveConfigMap = new Map();
+        const reserveDataMap = new Map();
+        const emissionDataMap = new Map();
+        for (const entry of reserveLedgerEntries.entries) {
+            const ledgerEntry = entry.val;
+            const key = decodeEntryKey(ledgerEntry.contractData().key());
+            switch (key) {
+                case 'ResConfig': {
+                    const reserveId = getReserveId(ledgerEntry);
+                    reserveConfigMap.set(reserveId, ReserveConfigV2.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                case 'ResData': {
+                    const reserveId = getReserveId(ledgerEntry);
+                    reserveDataMap.set(reserveId, ReserveData.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                case `EmisData`: {
+                    const emissionIndex = getEmissionIndex(ledgerEntry);
+                    emissionDataMap.set(emissionIndex, EmissionDataV2.fromLedgerEntryData(ledgerEntry));
+                    break;
+                }
+                default:
+                    throw Error(`Invalid reserve key: should not contain ${key}`);
+            }
+        }
+        for (const [index, reserveId] of reserveList.entries()) {
+            const reserveConfig = reserveConfigMap.get(reserveId);
+            const reserveData = reserveDataMap.get(reserveId);
+            if (reserveConfig == undefined || reserveData == undefined) {
+                throw new Error('Unable to load reserve: missing data.');
+            }
+            const dTokenIndex = index * 2;
+            const bTokenIndex = index * 2 + 1;
+            const emissionBorrowData = emissionDataMap.get(dTokenIndex);
+            const emissionSupplyData = emissionDataMap.get(bTokenIndex);
+            let borrowEmissions = undefined;
+            if (emissionBorrowData) {
+                borrowEmissions = new EmissionsV2(emissionBorrowData, reserveLedgerEntries.latestLedger);
+                borrowEmissions.accrue(reserveData.dSupply, reserveConfig.decimals, timestamp);
+            }
+            let supplyEmissions = undefined;
+            if (emissionSupplyData) {
+                supplyEmissions = new EmissionsV2(emissionSupplyData, reserveLedgerEntries.latestLedger);
+                supplyEmissions.accrue(reserveData.bSupply, reserveConfig.decimals, timestamp);
+            }
+            const reserve = new ReserveV2(poolId, reserveId, reserveConfig, reserveData, borrowEmissions, supplyEmissions, 0, 0, 0, 0, reserveLedgerEntries.latestLedger);
+            reserve.accrue(backstopTakeRate, timestamp);
+            reserves.push(reserve);
+        }
+        return reserves;
+    }
+}
