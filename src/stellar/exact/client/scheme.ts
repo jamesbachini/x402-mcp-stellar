@@ -1,5 +1,6 @@
 import { nativeToScVal, TransactionBuilder, contract } from "@stellar/stellar-sdk";
 import { Api } from "@stellar/stellar-sdk/rpc";
+import { STELLAR_TESTNET_CAIP2 } from "../../constants";
 import { handleSimulationResult } from "../../shared";
 import {
   getEstimatedLedgerCloseTimeSeconds,
@@ -13,9 +14,17 @@ import {
 } from "../../utils";
 import type { ClientStellarSigner } from "../../signer";
 import type { PaymentPayload, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
+import type { Network } from "@x402/core/types";
 
-/** Base fee in stroops (0.001 XLM) used when building the final tx fee after auth signing. */
+/** Testnet x402 resources expect the smallest possible client-paid base fee. */
+const TESTNET_BASE_FEE_STROOPS = 1;
+
+/** Mainnet base fee in stroops (0.001 XLM) used when building the final tx fee after auth signing. */
 const DEFAULT_BASE_FEE_STROOPS = 10_000;
+
+export function getPaymentTransactionBaseFeeStroops(network: Network): number {
+  return network === STELLAR_TESTNET_CAIP2 ? TESTNET_BASE_FEE_STROOPS : DEFAULT_BASE_FEE_STROOPS;
+}
 
 /**
  * Stellar client implementation for the Exact payment scheme.
@@ -106,7 +115,10 @@ export class ExactStellarScheme implements SchemeNetworkClient {
     const finalTx =
       tx.simulation && Api.isSimulationSuccess(tx.simulation)
         ? TransactionBuilder.cloneFrom(tx.built!, {
-            fee: (DEFAULT_BASE_FEE_STROOPS + parseInt(tx.simulation.minResourceFee, 10)).toString(),
+            fee: (
+              getPaymentTransactionBaseFeeStroops(network) +
+              parseInt(tx.simulation.minResourceFee, 10)
+            ).toString(),
             sorobanData: tx.simulationData.transactionData,
             networkPassphrase,
           }).build()
