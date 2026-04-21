@@ -1,6 +1,7 @@
 node_modules
 .env
 .env.testnet
+.env.pubnet
 npm-debug.log*
 pnpm-lock.yaml
 .DS_Store
